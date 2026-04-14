@@ -16,6 +16,7 @@ import {
   MessageSquare,
   GripVertical,
 } from 'lucide-react';
+import RichTextEditor from '../components/RichTextEditor';
 
 export default function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -257,18 +258,14 @@ export default function CampaignDetail() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Innehåll (HTML)</label>
-                      <textarea
+                      <label className="block text-xs text-gray-500 mb-1">Innehåll</label>
+                      <RichTextEditor
                         value={step.body_template}
-                        onChange={(e) => updateStep(index, 'body_template', e.target.value)}
-                        rows={4}
-                        placeholder="<p>Hej {{contact_name}},</p><p>Vi vill bjuda in {{company}} till...</p>"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
+                        onChange={(html) => updateStep(index, 'body_template', html)}
+                        placeholder="Hej, vi vill bjuda in er till vår SS27 preview..."
+                        rows={5}
                       />
                     </div>
-                    <p className="text-xs text-gray-400">
-                      Variabler: {'{{contact_name}}'}, {'{{company}}'}, {'{{sender_name}}'}, {'{{sender_email}}'}
-                    </p>
                   </div>
                 ) : (
                   <div>

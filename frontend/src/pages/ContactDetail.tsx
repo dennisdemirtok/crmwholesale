@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Clock,
 } from 'lucide-react';
+import RichTextEditor from '../components/RichTextEditor';
 
 export default function ContactDetail() {
   const { id } = useParams<{ id: string }>();
@@ -336,7 +337,7 @@ function SendEmailModal({
       const email = await api.post<SentEmail>('/api/emails/send', {
         contact_id: contact.id,
         subject,
-        body: `<div>${body.replace(/\n/g, '<br/>')}</div>`,
+        body,
       });
       setSubject('');
       setBody('');
@@ -365,13 +366,12 @@ function SendEmailModal({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Meddelande *</label>
-          <textarea
-            required
+          <label className="block text-sm font-medium text-gray-700 mb-1">Meddelande</label>
+          <RichTextEditor
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={setBody}
+            placeholder="Skriv ditt meddelande..."
             rows={8}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
           />
         </div>
         <div className="flex justify-end gap-3 pt-2">
