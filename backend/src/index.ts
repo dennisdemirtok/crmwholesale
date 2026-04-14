@@ -9,6 +9,7 @@ import enrollmentRoutes from './routes/enrollments';
 import emailRoutes from './routes/emails';
 import trackingRoutes from './routes/tracking';
 import dashboardRoutes from './routes/dashboard';
+import settingsRoutes from './routes/settings';
 import { startSequenceWorker, startReplyCheckWorker, scheduleReplyChecks } from './jobs/queue';
 
 const app = express();
@@ -29,6 +30,7 @@ app.use('/api/campaigns', campaignRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/settings', settingsRoutes);
 app.use('/track', trackingRoutes);
 
 // Health check

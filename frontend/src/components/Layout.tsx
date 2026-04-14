@@ -6,6 +6,7 @@ import {
   Users,
   Mail,
   Megaphone,
+  Settings,
   LogOut,
   Menu,
   X,
@@ -17,6 +18,7 @@ const navigation = [
   { name: 'Kontakter', href: '/contacts', icon: Users },
   { name: 'Kampanjer', href: '/campaigns', icon: Megaphone },
   { name: 'E-post', href: '/emails', icon: Mail },
+  { name: 'Inställningar', href: '/settings', icon: Settings },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

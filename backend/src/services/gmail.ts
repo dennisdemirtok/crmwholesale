@@ -93,38 +93,62 @@ function getGmailClient(accessToken: string) {
   return google.gmail({ version: 'v1', auth });
 }
 
+/**
+ * RFC 2047 encode a header value for UTF-8 support
+ */
+function encodeHeader(value: string): string {
+  // Check if the value contains non-ASCII characters
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  // Use RFC 2047 B-encoding for UTF-8
+  const encoded = Buffer.from(value, 'utf-8').toString('base64');
+  return `=?UTF-8?B?${encoded}?=`;
+}
+
 export async function sendEmail(
   userId: string,
   to: string,
   subject: string,
   htmlBody: string,
+  replyToMessageId?: string,
   threadId?: string
 ): Promise<{ messageId: string; threadId: string }> {
   const accessToken = await getValidAccessToken(userId);
   const gmail = getGmailClient(accessToken);
 
-  const user = await queryOne<{ email: string; name: string }>(
-    'SELECT email, name FROM crm_users WHERE id = $1',
+  const user = await queryOne<{ email: string; name: string; signature: string | null }>(
+    'SELECT email, name, signature FROM crm_users WHERE id = $1',
     [userId]
   );
 
   if (!user) throw new Error('User not found');
 
-  const messageParts = [
-    `From: ${user.name} <${user.email}>`,
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=utf-8',
-    '',
-    htmlBody,
-  ];
-
-  if (threadId) {
-    messageParts.splice(3, 0, `In-Reply-To: ${threadId}`, `References: ${threadId}`);
+  // Append signature if set
+  let fullBody = htmlBody;
+  if (user.signature) {
+    fullBody += `<br/><br/>--<br/>${user.signature}`;
   }
 
-  const raw = Buffer.from(messageParts.join('\r\n'))
+  // Build MIME message with proper UTF-8 encoding
+  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  const headers = [
+    `From: =?UTF-8?B?${Buffer.from(user.name, 'utf-8').toString('base64')}?= <${user.email}>`,
+    `To: ${to}`,
+    `Subject: ${encodeHeader(subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: text/html; charset="UTF-8"`,
+    'Content-Transfer-Encoding: base64',
+  ];
+
+  if (replyToMessageId) {
+    headers.push(`In-Reply-To: ${replyToMessageId}`);
+    headers.push(`References: ${replyToMessageId}`);
+  }
+
+  const bodyBase64 = Buffer.from(fullBody, 'utf-8').toString('base64');
+  const message = headers.join('\r\n') + '\r\n\r\n' + bodyBase64;
+
+  const raw = Buffer.from(message, 'utf-8')
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
@@ -189,6 +213,19 @@ export async function getThread(userId: string, threadId: string) {
   const { data } = await gmail.users.threads.get({
     userId: 'me',
     id: threadId,
+    format: 'full',
+  });
+
+  return data;
+}
+
+export async function getMessage(userId: string, messageId: string) {
+  const accessToken = await getValidAccessToken(userId);
+  const gmail = getGmailClient(accessToken);
+
+  const { data } = await gmail.users.messages.get({
+    userId: 'me',
+    id: messageId,
     format: 'full',
   });
 

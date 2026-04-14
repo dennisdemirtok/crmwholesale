@@ -145,37 +145,12 @@ export default function ContactDetail() {
         ) : (
           <div className="space-y-3">
             {emails.map((email) => (
-              <div
+              <EmailThreadItem
                 key={email.id}
-                className="flex items-start gap-4 p-4 rounded-lg border border-gray-100 hover:bg-gray-50"
-              >
-                <div className="pt-1">
-                  <Send size={16} className="text-gray-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900">{email.subject}</p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {new Date(email.sent_at).toLocaleString('sv-SE')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 text-xs">
-                  {email.opened_at && (
-                    <span className="flex items-center gap-1 text-green-600">
-                      <Eye size={12} />
-                      Öppnat ({email.open_count}x)
-                    </span>
-                  )}
-                  {email.replied_at && (
-                    <span className="flex items-center gap-1 text-emerald-600">
-                      <MessageSquare size={12} />
-                      Svarat
-                    </span>
-                  )}
-                  {!email.opened_at && !email.replied_at && (
-                    <span className="text-gray-400">Skickat</span>
-                  )}
-                </div>
-              </div>
+                email={email}
+                contact={contact}
+                onReplySent={(newEmail) => setEmails([newEmail, ...emails])}
+              />
             ))}
           </div>
         )}
@@ -202,6 +177,168 @@ export default function ContactDetail() {
           setShowSendEmail(false);
         }}
       />
+    </div>
+  );
+}
+
+function EmailThreadItem({
+  email,
+  contact,
+  onReplySent,
+}: {
+  email: SentEmail;
+  contact: Contact;
+  onReplySent: (email: SentEmail) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [thread, setThread] = useState<any[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
+  const [showReply, setShowReply] = useState(false);
+  const [replyBody, setReplyBody] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const loadThread = async () => {
+    if (!email.gmail_thread_id || thread.length > 0) {
+      setExpanded(!expanded);
+      return;
+    }
+    setLoadingThread(true);
+    try {
+      const data = await api.get<{ messages: any[] }>(`/api/emails/thread/${email.gmail_thread_id}`);
+      setThread(data.messages || []);
+      setExpanded(true);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingThread(false);
+    }
+  };
+
+  const handleReply = async () => {
+    if (!replyBody.trim()) return;
+    setSending(true);
+    try {
+      const lastMessage = thread[thread.length - 1];
+      const newEmail = await api.post<SentEmail>('/api/emails/send', {
+        contact_id: contact.id,
+        subject: `Re: ${email.subject}`,
+        body: replyBody,
+        thread_id: email.gmail_thread_id,
+        reply_to_message_id: lastMessage?.id || email.gmail_message_id,
+      });
+      setReplyBody('');
+      setShowReply(false);
+      // Reload thread
+      if (email.gmail_thread_id) {
+        const data = await api.get<{ messages: any[] }>(`/api/emails/thread/${email.gmail_thread_id}`);
+        setThread(data.messages || []);
+      }
+      onReplySent(newEmail);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden">
+      {/* Summary row */}
+      <div
+        onClick={loadThread}
+        className="flex items-start gap-4 p-4 hover:bg-gray-50 cursor-pointer"
+      >
+        <div className="pt-1">
+          <Send size={16} className="text-gray-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-gray-900">{email.subject}</p>
+          <p className="text-xs text-gray-500 mt-1">
+            {new Date(email.sent_at).toLocaleString('sv-SE')}
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          {email.opened_at && (
+            <span className="flex items-center gap-1 text-green-600">
+              <Eye size={12} /> Öppnat ({email.open_count}x)
+            </span>
+          )}
+          {email.replied_at && (
+            <span className="flex items-center gap-1 text-emerald-600">
+              <MessageSquare size={12} /> Svarat
+            </span>
+          )}
+          {!email.opened_at && !email.replied_at && (
+            <span className="text-gray-400">Skickat</span>
+          )}
+          {email.gmail_thread_id && (
+            <span className="text-brand-600">{expanded ? '▲' : '▼'}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Expanded thread */}
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50">
+          {loadingThread ? (
+            <div className="p-4 flex justify-center">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-brand-600" />
+            </div>
+          ) : (
+            <>
+              <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                {thread.map((msg, i) => {
+                  const isFromMe = msg.labelIds?.includes('SENT');
+                  return (
+                    <div key={msg.id || i} className={`p-4 ${isFromMe ? 'bg-blue-50/50' : 'bg-white'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-medium text-gray-700">
+                          {isFromMe ? '↗ Du' : `↙ ${msg.from?.split('<')[0]?.trim() || 'Okänd'}`}
+                        </p>
+                        <p className="text-xs text-gray-400">{msg.date ? new Date(msg.date).toLocaleString('sv-SE') : ''}</p>
+                      </div>
+                      {msg.body ? (
+                        <div className="text-sm text-gray-700 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: msg.body }} />
+                      ) : (
+                        <p className="text-sm text-gray-500">{msg.snippet}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Reply section */}
+              {showReply ? (
+                <div className="p-4 border-t border-gray-200 bg-white">
+                  <RichTextEditor
+                    value={replyBody}
+                    onChange={setReplyBody}
+                    placeholder="Skriv ditt svar..."
+                    rows={4}
+                  />
+                  <div className="flex justify-end gap-2 mt-3">
+                    <button onClick={() => setShowReply(false)} className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50">Avbryt</button>
+                    <button onClick={handleReply} disabled={sending} className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
+                      <Send size={14} />
+                      {sending ? 'Skickar...' : 'Skicka svar'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 border-t border-gray-200 bg-white">
+                  <button
+                    onClick={() => setShowReply(true)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-brand-600 border border-brand-200 rounded-lg hover:bg-brand-50"
+                  >
+                    <MessageSquare size={14} />
+                    Svara
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

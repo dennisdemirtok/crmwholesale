@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
 import { pool, queryOne, queryAll } from '../db/supabase';
-import { sendEmail, getThread } from '../services/gmail';
+import { sendEmail, getThread, getMessage } from '../services/gmail';
 import { injectTrackingPixel } from '../utils/template';
 import { v4 as uuid } from 'uuid';
 
@@ -9,7 +9,7 @@ const router = Router();
 router.use(authenticate);
 
 router.post('/send', async (req: Request, res: Response) => {
-  const { contact_id, subject, body, thread_id } = req.body;
+  const { contact_id, subject, body, thread_id, reply_to_message_id } = req.body;
   const userId = req.user!.userId;
   if (!contact_id || !subject || !body) { res.status(400).json({ error: 'contact_id, subject, and body required' }); return; }
 
@@ -20,7 +20,7 @@ router.post('/send', async (req: Request, res: Response) => {
   const htmlBody = injectTrackingPixel(body, trackingPixelId);
 
   try {
-    const result = await sendEmail(userId, contact.email, subject, htmlBody, thread_id);
+    const result = await sendEmail(userId, contact.email, subject, htmlBody, reply_to_message_id, thread_id);
     const sentEmail = await queryOne(
       `INSERT INTO crm_sent_emails (contact_id, sender_id, gmail_message_id, gmail_thread_id, subject, body, tracking_pixel_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -38,10 +38,43 @@ router.get('/contact/:contactId', async (req: Request, res: Response) => {
   res.json(data);
 });
 
+// Get full thread from Gmail (all messages in conversation)
 router.get('/thread/:threadId', async (req: Request, res: Response) => {
   try {
     const thread = await getThread(req.user!.userId, req.params.threadId);
-    res.json(thread);
+
+    // Parse messages into a clean format
+    const messages = (thread.messages || []).map((msg: any) => {
+      const headers = msg.payload?.headers || [];
+      const getHeader = (name: string) => headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+
+      // Get body content
+      let body = '';
+      if (msg.payload?.body?.data) {
+        body = Buffer.from(msg.payload.body.data, 'base64').toString('utf-8');
+      } else if (msg.payload?.parts) {
+        const htmlPart = msg.payload.parts.find((p: any) => p.mimeType === 'text/html');
+        const textPart = msg.payload.parts.find((p: any) => p.mimeType === 'text/plain');
+        const part = htmlPart || textPart;
+        if (part?.body?.data) {
+          body = Buffer.from(part.body.data, 'base64').toString('utf-8');
+        }
+      }
+
+      return {
+        id: msg.id,
+        threadId: msg.threadId,
+        from: getHeader('From'),
+        to: getHeader('To'),
+        subject: getHeader('Subject'),
+        date: getHeader('Date'),
+        snippet: msg.snippet,
+        body,
+        labelIds: msg.labelIds || [],
+      };
+    });
+
+    res.json({ threadId: thread.id, messages });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
