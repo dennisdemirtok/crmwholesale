@@ -1,170 +1,100 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
-import { supabase } from '../db/supabase';
+import { pool, queryOne, queryAll } from '../db/supabase';
 import { sequenceQueue } from '../jobs/queue';
 
 const router = Router();
 router.use(authenticate);
 
-// Enroll contacts in a campaign
 router.post('/', async (req: Request, res: Response) => {
   const { campaign_id, contact_ids } = req.body;
-
   if (!campaign_id || !Array.isArray(contact_ids) || contact_ids.length === 0) {
-    res.status(400).json({ error: 'campaign_id and contact_ids required' });
-    return;
+    res.status(400).json({ error: 'campaign_id and contact_ids required' }); return;
   }
 
-  // Verify campaign exists and has steps
-  const { data: campaign } = await supabase
-    .from('campaigns')
-    .select('id, status')
-    .eq('id', campaign_id)
-    .single();
+  const campaign = await queryOne('SELECT id, status FROM crm_campaigns WHERE id = $1', [campaign_id]);
+  if (!campaign) { res.status(404).json({ error: 'Campaign not found' }); return; }
 
-  if (!campaign) {
-    res.status(404).json({ error: 'Campaign not found' });
-    return;
-  }
+  const steps = await queryAll('SELECT * FROM crm_sequence_steps WHERE campaign_id = $1 ORDER BY step_order', [campaign_id]);
+  if (steps.length === 0) { res.status(400).json({ error: 'Campaign has no sequence steps' }); return; }
 
-  const { data: steps } = await supabase
-    .from('sequence_steps')
-    .select('*')
-    .eq('campaign_id', campaign_id)
-    .order('step_order');
-
-  if (!steps || steps.length === 0) {
-    res.status(400).json({ error: 'Campaign has no sequence steps' });
-    return;
-  }
-
-  // Create enrollments
   const firstStepDelay = steps[0].delay_hours;
   const nextStepAt = new Date(Date.now() + firstStepDelay * 60 * 60 * 1000);
+  let enrolled = 0;
 
-  const rows = contact_ids.map((contactId: string) => ({
-    contact_id: contactId,
-    campaign_id,
-    current_step: 1,
-    status: 'active' as const,
-    next_step_at: nextStepAt.toISOString(),
-  }));
+  for (const contactId of contact_ids) {
+    try {
+      const enrollment = await queryOne(
+        `INSERT INTO crm_enrollments (contact_id, campaign_id, current_step, status, next_step_at)
+         VALUES ($1, $2, 1, 'active', $3)
+         ON CONFLICT (contact_id, campaign_id) DO UPDATE SET status = 'active', current_step = 1, next_step_at = $3
+         RETURNING *`,
+        [contactId, campaign_id, nextStepAt]
+      );
 
-  const { data: enrollments, error } = await supabase
-    .from('enrollments')
-    .upsert(rows, { onConflict: 'contact_id,campaign_id' })
-    .select();
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
-  // Activate campaign if draft
-  if (campaign.status === 'draft') {
-    await supabase
-      .from('campaigns')
-      .update({ status: 'active' })
-      .eq('id', campaign_id);
-  }
-
-  // Queue sequence jobs
-  for (const enrollment of enrollments || []) {
-    await sequenceQueue.add(
-      'process-step',
-      {
-        enrollmentId: enrollment.id,
-        campaignId: campaign_id,
-        stepOrder: 1,
-        userId: req.user!.userId,
-      },
-      {
-        delay: firstStepDelay * 60 * 60 * 1000,
-        jobId: `seq-${enrollment.id}-step-1`,
+      if (enrollment) {
+        await sequenceQueue.add('process-step', {
+          enrollmentId: enrollment.id,
+          campaignId: campaign_id,
+          stepOrder: 1,
+          userId: req.user!.userId,
+        }, {
+          delay: firstStepDelay * 60 * 60 * 1000,
+          jobId: `seq-${enrollment.id}-step-1`,
+        });
+        enrolled++;
       }
-    );
+    } catch { /* skip */ }
   }
 
-  res.status(201).json({ enrolled: enrollments?.length || 0 });
+  if (campaign.status === 'draft') {
+    await pool.query("UPDATE crm_campaigns SET status = 'active' WHERE id = $1", [campaign_id]);
+  }
+
+  res.status(201).json({ enrolled });
 });
 
-// Pause enrollment
 router.post('/:id/pause', async (req: Request, res: Response) => {
-  const { data, error } = await supabase
-    .from('enrollments')
-    .update({ status: 'paused' })
-    .eq('id', req.params.id)
-    .eq('status', 'active')
-    .select()
-    .single();
-
-  if (error || !data) {
-    res.status(400).json({ error: 'Enrollment not found or not active' });
-    return;
-  }
-
+  const data = await queryOne(
+    "UPDATE crm_enrollments SET status = 'paused' WHERE id = $1 AND status = 'active' RETURNING *",
+    [req.params.id]
+  );
+  if (!data) { res.status(400).json({ error: 'Enrollment not found or not active' }); return; }
   res.json(data);
 });
 
-// Resume enrollment
 router.post('/:id/resume', async (req: Request, res: Response) => {
-  const { data: enrollment } = await supabase
-    .from('enrollments')
-    .select('*')
-    .eq('id', req.params.id)
-    .eq('status', 'paused')
-    .single();
+  const enrollment = await queryOne(
+    "SELECT * FROM crm_enrollments WHERE id = $1 AND status = 'paused'",
+    [req.params.id]
+  );
+  if (!enrollment) { res.status(400).json({ error: 'Enrollment not found or not paused' }); return; }
 
-  if (!enrollment) {
-    res.status(400).json({ error: 'Enrollment not found or not paused' });
-    return;
-  }
-
-  const nextStepAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
-  const { data, error } = await supabase
-    .from('enrollments')
-    .update({ status: 'active', next_step_at: nextStepAt.toISOString() })
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
-  // Re-queue the step
-  await sequenceQueue.add(
-    'process-step',
-    {
-      enrollmentId: enrollment.id,
-      campaignId: enrollment.campaign_id,
-      stepOrder: enrollment.current_step,
-      userId: req.user!.userId,
-    },
-    {
-      delay: 60 * 60 * 1000,
-      jobId: `seq-${enrollment.id}-step-${enrollment.current_step}-resume`,
-    }
+  const nextStepAt = new Date(Date.now() + 60 * 60 * 1000);
+  const data = await queryOne(
+    "UPDATE crm_enrollments SET status = 'active', next_step_at = $1 WHERE id = $2 RETURNING *",
+    [nextStepAt, req.params.id]
   );
 
+  await sequenceQueue.add('process-step', {
+    enrollmentId: enrollment.id,
+    campaignId: enrollment.campaign_id,
+    stepOrder: enrollment.current_step,
+    userId: req.user!.userId,
+  }, {
+    delay: 60 * 60 * 1000,
+    jobId: `seq-${enrollment.id}-step-${enrollment.current_step}-resume`,
+  });
+
   res.json(data);
 });
 
-// Cancel enrollment
 router.post('/:id/cancel', async (req: Request, res: Response) => {
-  const { data, error } = await supabase
-    .from('enrollments')
-    .update({ status: 'cancelled' })
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error || !data) {
-    res.status(400).json({ error: 'Enrollment not found' });
-    return;
-  }
-
+  const data = await queryOne(
+    "UPDATE crm_enrollments SET status = 'cancelled' WHERE id = $1 RETURNING *",
+    [req.params.id]
+  );
+  if (!data) { res.status(400).json({ error: 'Enrollment not found' }); return; }
   res.json(data);
 });
 

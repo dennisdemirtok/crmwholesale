@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
-import { supabase } from '../db/supabase';
+import { pool, queryOne, queryAll } from '../db/supabase';
 
 const router = Router();
 router.use(authenticate);
@@ -10,175 +10,102 @@ router.get('/', async (req: Request, res: Response) => {
   const { user } = req;
   const { status, country, category, tag, search, page = '1', limit = '50' } = req.query;
 
-  let query = supabase
-    .from('contacts')
-    .select('*, users!contacts_owner_id_fkey(name, email)', { count: 'exact' });
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIdx = 1;
 
-  // Role-based filtering
   if (user!.role === 'seller') {
-    query = query.eq('owner_id', user!.userId);
+    conditions.push(`c.owner_id = $${paramIdx++}`);
+    params.push(user!.userId);
   }
-
-  if (status) query = query.eq('status', status);
-  if (country) query = query.eq('country', country);
-  if (category) query = query.eq('category', category);
-  if (tag) query = query.contains('tags', [tag as string]);
+  if (status) { conditions.push(`c.status = $${paramIdx++}`); params.push(status); }
+  if (country) { conditions.push(`c.country = $${paramIdx++}`); params.push(country); }
+  if (category) { conditions.push(`c.category = $${paramIdx++}`); params.push(category); }
+  if (tag) { conditions.push(`$${paramIdx++} = ANY(c.tags)`); params.push(tag); }
   if (search) {
-    query = query.or(
-      `company.ilike.%${search}%,contact_name.ilike.%${search}%,email.ilike.%${search}%`
-    );
+    conditions.push(`(c.company ILIKE $${paramIdx} OR c.contact_name ILIKE $${paramIdx} OR c.email ILIKE $${paramIdx})`);
+    params.push(`%${search}%`);
+    paramIdx++;
   }
 
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const pageNum = parseInt(page as string);
   const limitNum = parseInt(limit as string);
   const offset = (pageNum - 1) * limitNum;
 
-  query = query
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limitNum - 1);
+  const countResult = await pool.query(`SELECT COUNT(*) FROM crm_contacts c ${where}`, params);
+  const total = parseInt(countResult.rows[0].count);
 
-  const { data, error, count } = await query;
-  if (error) {
-    res.status(500).json({ error: error.message });
-    return;
-  }
+  const contacts = await queryAll(
+    `SELECT c.*, json_build_object('name', u.name, 'email', u.email) as users
+     FROM crm_contacts c LEFT JOIN crm_users u ON c.owner_id = u.id
+     ${where} ORDER BY c.created_at DESC
+     LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+    [...params, limitNum, offset]
+  );
 
-  res.json({
-    contacts: data,
-    total: count,
-    page: pageNum,
-    totalPages: Math.ceil((count || 0) / limitNum),
-  });
+  res.json({ contacts, total, page: pageNum, totalPages: Math.ceil(total / limitNum) });
 });
 
-// Get single contact
 router.get('/:id', async (req: Request, res: Response) => {
-  const { data, error } = await supabase
-    .from('contacts')
-    .select('*, users!contacts_owner_id_fkey(name, email)')
-    .eq('id', req.params.id)
-    .single();
-
-  if (error || !data) {
-    res.status(404).json({ error: 'Contact not found' });
-    return;
+  const contact = await queryOne(
+    `SELECT c.*, json_build_object('name', u.name, 'email', u.email) as users
+     FROM crm_contacts c LEFT JOIN crm_users u ON c.owner_id = u.id WHERE c.id = $1`,
+    [req.params.id]
+  );
+  if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
+  if (req.user!.role === 'seller' && contact.owner_id !== req.user!.userId) {
+    res.status(403).json({ error: 'Access denied' }); return;
   }
-
-  if (req.user!.role === 'seller' && data.owner_id !== req.user!.userId) {
-    res.status(403).json({ error: 'Access denied' });
-    return;
-  }
-
-  res.json(data);
+  res.json(contact);
 });
 
-// Create contact
 router.post('/', async (req: Request, res: Response) => {
   const { company, contact_name, email, country, category, status, tags, notes } = req.body;
-
-  const { data, error } = await supabase
-    .from('contacts')
-    .insert({
-      company,
-      contact_name,
-      email,
-      country,
-      category,
-      status: status || 'prospect',
-      tags: tags || [],
-      owner_id: req.user!.userId,
-      notes,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
-  res.status(201).json(data);
+  try {
+    const contact = await queryOne(
+      `INSERT INTO crm_contacts (company, contact_name, email, country, category, status, tags, owner_id, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [company, contact_name, email, country, category, status || 'prospect', tags || [], req.user!.userId, notes]
+    );
+    res.status(201).json(contact);
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-// Update contact
 router.put('/:id', async (req: Request, res: Response) => {
   const { company, contact_name, email, country, category, status, tags, notes, owner_id } = req.body;
-
-  const updates: Record<string, any> = {};
-  if (company !== undefined) updates.company = company;
-  if (contact_name !== undefined) updates.contact_name = contact_name;
-  if (email !== undefined) updates.email = email;
-  if (country !== undefined) updates.country = country;
-  if (category !== undefined) updates.category = category;
-  if (status !== undefined) updates.status = status;
-  if (tags !== undefined) updates.tags = tags;
-  if (notes !== undefined) updates.notes = notes;
-  if (owner_id !== undefined && req.user!.role !== 'seller') {
-    updates.owner_id = owner_id;
-  }
-
-  const { data, error } = await supabase
-    .from('contacts')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
-  res.json(data);
+  const sets: string[] = []; const params: any[] = []; let idx = 1;
+  const add = (n: string, v: any) => { if (v !== undefined) { sets.push(`${n} = $${idx++}`); params.push(v); } };
+  add('company', company); add('contact_name', contact_name); add('email', email);
+  add('country', country); add('category', category); add('status', status);
+  add('tags', tags); add('notes', notes);
+  if (owner_id !== undefined && req.user!.role !== 'seller') add('owner_id', owner_id);
+  if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return; }
+  params.push(req.params.id);
+  const contact = await queryOne(`UPDATE crm_contacts SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`, params);
+  res.json(contact);
 });
 
-// Delete contact
 router.delete('/:id', async (req: Request, res: Response) => {
-  const { error } = await supabase
-    .from('contacts')
-    .delete()
-    .eq('id', req.params.id);
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
+  await pool.query('DELETE FROM crm_contacts WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
 
-// Bulk import contacts (CSV)
 router.post('/import', async (req: Request, res: Response) => {
   const { contacts } = req.body;
-
-  if (!Array.isArray(contacts) || contacts.length === 0) {
-    res.status(400).json({ error: 'No contacts provided' });
-    return;
+  if (!Array.isArray(contacts) || contacts.length === 0) { res.status(400).json({ error: 'No contacts provided' }); return; }
+  let imported = 0;
+  for (const c of contacts) {
+    try {
+      await pool.query(
+        `INSERT INTO crm_contacts (company, contact_name, email, country, category, status, tags, owner_id, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [c.company, c.contact_name, c.email, c.country || null, c.category || null, c.status || 'prospect', c.tags || [], req.user!.userId, c.notes || null]
+      );
+      imported++;
+    } catch { /* skip bad rows */ }
   }
-
-  const rows = contacts.map((c: any) => ({
-    company: c.company,
-    contact_name: c.contact_name,
-    email: c.email,
-    country: c.country || null,
-    category: c.category || null,
-    status: c.status || 'prospect',
-    tags: c.tags || [],
-    owner_id: req.user!.userId,
-    notes: c.notes || null,
-  }));
-
-  const { data, error } = await supabase
-    .from('contacts')
-    .insert(rows)
-    .select();
-
-  if (error) {
-    res.status(400).json({ error: error.message });
-    return;
-  }
-
-  res.status(201).json({ imported: data?.length || 0 });
+  res.status(201).json({ imported });
 });
 
 export default router;

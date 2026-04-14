@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { redis } from './redis';
-import { supabase } from '../db/supabase';
+import { pool, queryOne } from '../db/supabase';
 import { encrypt, decrypt } from '../utils/encryption';
 
 const oauth2Client = new google.auth.OAuth2(
@@ -47,13 +47,12 @@ export async function getValidAccessToken(userId: string): Promise<string> {
   const cached = await redis.get(cacheKey);
   if (cached) return cached;
 
-  const { data: user, error } = await supabase
-    .from('users')
-    .select('google_refresh_token, token_status')
-    .eq('id', userId)
-    .single();
+  const user = await queryOne<{ google_refresh_token: string; token_status: string }>(
+    'SELECT google_refresh_token, token_status FROM crm_users WHERE id = $1',
+    [userId]
+  );
 
-  if (error || !user?.google_refresh_token) {
+  if (!user?.google_refresh_token) {
     throw new Error('No refresh token available');
   }
 
@@ -69,19 +68,19 @@ export async function getValidAccessToken(userId: string): Promise<string> {
 
     if (credentials.access_token) {
       await redis.setex(cacheKey, 3000, credentials.access_token);
-      await supabase
-        .from('users')
-        .update({ last_token_refresh: new Date().toISOString(), token_status: 'active' })
-        .eq('id', userId);
+      await pool.query(
+        "UPDATE crm_users SET last_token_refresh = $1, token_status = 'active' WHERE id = $2",
+        [new Date(), userId]
+      );
       return credentials.access_token;
     }
     throw new Error('No access token received');
   } catch (err: any) {
     if (err.message?.includes('invalid_grant') || err.code === 400) {
-      await supabase
-        .from('users')
-        .update({ token_status: 'revoked' })
-        .eq('id', userId);
+      await pool.query(
+        "UPDATE crm_users SET token_status = 'revoked' WHERE id = $1",
+        [userId]
+      );
       throw new Error('Refresh token revoked — user needs to re-authenticate');
     }
     throw err;
@@ -104,11 +103,10 @@ export async function sendEmail(
   const accessToken = await getValidAccessToken(userId);
   const gmail = getGmailClient(accessToken);
 
-  const { data: user } = await supabase
-    .from('users')
-    .select('email, name')
-    .eq('id', userId)
-    .single();
+  const user = await queryOne<{ email: string; name: string }>(
+    'SELECT email, name FROM crm_users WHERE id = $1',
+    [userId]
+  );
 
   if (!user) throw new Error('User not found');
 

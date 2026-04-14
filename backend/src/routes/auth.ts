@@ -2,8 +2,7 @@ import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { getAuthUrl, exchangeCode } from '../services/gmail';
 import { encrypt } from '../utils/encryption';
-import { supabase } from '../db/supabase';
-import { redis } from '../services/redis';
+import { pool, queryOne } from '../db/supabase';
 
 const router = Router();
 
@@ -23,12 +22,11 @@ router.get('/google/callback', async (req: Request, res: Response) => {
   try {
     const { tokens, userInfo } = await exchangeCode(code);
 
-    // Upsert user
-    const { data: existingUser } = await supabase
-      .from('users')
-      .select('id, role')
-      .eq('email', userInfo.email)
-      .single();
+    // Check if user exists
+    const existingUser = await queryOne<{ id: string; role: string }>(
+      'SELECT id, role FROM crm_users WHERE email = $1',
+      [userInfo.email]
+    );
 
     let userId: string;
     let userRole: string;
@@ -36,30 +34,33 @@ router.get('/google/callback', async (req: Request, res: Response) => {
     if (existingUser) {
       userId = existingUser.id;
       userRole = existingUser.role;
-      await supabase
-        .from('users')
-        .update({
-          name: userInfo.name,
-          google_refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined,
-          token_status: 'active',
-          last_token_refresh: new Date().toISOString(),
-        })
-        .eq('id', userId);
-    } else {
-      const { data: newUser, error } = await supabase
-        .from('users')
-        .insert({
-          email: userInfo.email,
-          name: userInfo.name,
-          role: 'seller',
-          google_refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
-          token_status: tokens.refresh_token ? 'active' : 'pending',
-          last_token_refresh: new Date().toISOString(),
-        })
-        .select('id, role')
-        .single();
+      const updates: string[] = ['name = $2', 'token_status = $3', 'last_token_refresh = $4'];
+      const params: any[] = [userId, userInfo.name, 'active', new Date()];
 
-      if (error || !newUser) {
+      if (tokens.refresh_token) {
+        updates.push(`google_refresh_token = $${params.length + 1}`);
+        params.push(encrypt(tokens.refresh_token));
+      }
+
+      await pool.query(
+        `UPDATE crm_users SET ${updates.join(', ')} WHERE id = $1`,
+        params
+      );
+    } else {
+      const newUser = await queryOne<{ id: string; role: string }>(
+        `INSERT INTO crm_users (email, name, role, google_refresh_token, token_status, last_token_refresh)
+         VALUES ($1, $2, 'seller', $3, $4, $5)
+         RETURNING id, role`,
+        [
+          userInfo.email,
+          userInfo.name,
+          tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+          tokens.refresh_token ? 'active' : 'pending',
+          new Date(),
+        ]
+      );
+
+      if (!newUser) {
         res.status(500).json({ error: 'Failed to create user' });
         return;
       }
@@ -67,25 +68,25 @@ router.get('/google/callback', async (req: Request, res: Response) => {
       userRole = newUser.role;
     }
 
-    // Cache access token
+    // Cache access token in Redis
     if (tokens.access_token) {
+      const { redis } = await import('../services/redis');
       await redis.setex(`gmail:token:${userId}`, 3000, tokens.access_token);
     }
 
     // Create session JWT
     const sessionToken = jwt.sign(
-      { userId, email: userInfo.email, role: userRole! },
+      { userId, email: userInfo.email, role: userRole },
       process.env.JWT_SECRET!,
       { expiresIn: '7d' }
     );
 
-    // Set cookie and redirect
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     res.cookie('session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     res.redirect(`${frontendUrl}/dashboard?auth=success`);
   } catch (err: any) {
@@ -109,11 +110,10 @@ router.get('/me', async (req: Request, res: Response) => {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET!) as any;
-    const { data: user } = await supabase
-      .from('users')
-      .select('id, email, name, role, token_status, created_at')
-      .eq('id', payload.userId)
-      .single();
+    const user = await queryOne(
+      'SELECT id, email, name, role, token_status, created_at FROM crm_users WHERE id = $1',
+      [payload.userId]
+    );
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });

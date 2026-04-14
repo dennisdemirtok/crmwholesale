@@ -1,10 +1,10 @@
 -- Flattered Wholesale CRM - Database Schema
--- Run this in Supabase SQL Editor
+-- All tables prefixed with crm_ to avoid conflicts with other services
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Users (sellers)
-CREATE TABLE IF NOT EXISTS users (
+-- CRM Users (sellers)
+CREATE TABLE IF NOT EXISTS crm_users (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   email text UNIQUE NOT NULL,
   name text NOT NULL,
@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Contacts (customers)
-CREATE TABLE IF NOT EXISTS contacts (
+-- CRM Contacts (customers)
+CREATE TABLE IF NOT EXISTS crm_contacts (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   company text NOT NULL,
   contact_name text NOT NULL,
@@ -25,24 +25,24 @@ CREATE TABLE IF NOT EXISTS contacts (
   category text CHECK (category IN ('boutique', 'department', 'agent', 'online')),
   status text NOT NULL DEFAULT 'prospect' CHECK (status IN ('active', 'prospect', 'churned')),
   tags text[] DEFAULT '{}',
-  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  owner_id uuid NOT NULL REFERENCES crm_users(id) ON DELETE CASCADE,
   notes text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Campaigns
-CREATE TABLE IF NOT EXISTS campaigns (
+-- CRM Campaigns
+CREATE TABLE IF NOT EXISTS crm_campaigns (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   name text NOT NULL,
-  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  owner_id uuid NOT NULL REFERENCES crm_users(id) ON DELETE CASCADE,
   status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'paused', 'completed')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Sequence steps
-CREATE TABLE IF NOT EXISTS sequence_steps (
+-- CRM Sequence steps
+CREATE TABLE IF NOT EXISTS crm_sequence_steps (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  campaign_id uuid NOT NULL REFERENCES crm_campaigns(id) ON DELETE CASCADE,
   step_order int NOT NULL,
   delay_hours int NOT NULL DEFAULT 0,
   subject_template text NOT NULL,
@@ -51,11 +51,11 @@ CREATE TABLE IF NOT EXISTS sequence_steps (
   UNIQUE(campaign_id, step_order)
 );
 
--- Enrollments
-CREATE TABLE IF NOT EXISTS enrollments (
+-- CRM Enrollments
+CREATE TABLE IF NOT EXISTS crm_enrollments (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-  contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  contact_id uuid NOT NULL REFERENCES crm_contacts(id) ON DELETE CASCADE,
+  campaign_id uuid NOT NULL REFERENCES crm_campaigns(id) ON DELETE CASCADE,
   current_step int NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'replied', 'paused', 'cancelled')),
   enrolled_at timestamptz NOT NULL DEFAULT now(),
@@ -63,12 +63,12 @@ CREATE TABLE IF NOT EXISTS enrollments (
   UNIQUE(contact_id, campaign_id)
 );
 
--- Sent emails
-CREATE TABLE IF NOT EXISTS sent_emails (
+-- CRM Sent emails
+CREATE TABLE IF NOT EXISTS crm_sent_emails (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-  enrollment_id uuid REFERENCES enrollments(id) ON DELETE SET NULL,
-  contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  sender_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  enrollment_id uuid REFERENCES crm_enrollments(id) ON DELETE SET NULL,
+  contact_id uuid NOT NULL REFERENCES crm_contacts(id) ON DELETE CASCADE,
+  sender_id uuid NOT NULL REFERENCES crm_users(id) ON DELETE CASCADE,
   gmail_message_id text,
   gmail_thread_id text,
   subject text NOT NULL,
@@ -81,47 +81,22 @@ CREATE TABLE IF NOT EXISTS sent_emails (
 );
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_id);
-CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
-CREATE INDEX IF NOT EXISTS idx_contacts_country ON contacts(country);
-CREATE INDEX IF NOT EXISTS idx_contacts_tags ON contacts USING GIN(tags);
-CREATE INDEX IF NOT EXISTS idx_enrollments_campaign ON enrollments(campaign_id);
-CREATE INDEX IF NOT EXISTS idx_enrollments_status ON enrollments(status);
-CREATE INDEX IF NOT EXISTS idx_enrollments_next_step ON enrollments(next_step_at) WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS idx_sent_emails_thread ON sent_emails(gmail_thread_id);
-CREATE INDEX IF NOT EXISTS idx_sent_emails_tracking ON sent_emails(tracking_pixel_id);
-CREATE INDEX IF NOT EXISTS idx_sent_emails_contact ON sent_emails(contact_id);
+CREATE INDEX IF NOT EXISTS idx_crm_contacts_owner ON crm_contacts(owner_id);
+CREATE INDEX IF NOT EXISTS idx_crm_contacts_status ON crm_contacts(status);
+CREATE INDEX IF NOT EXISTS idx_crm_contacts_country ON crm_contacts(country);
+CREATE INDEX IF NOT EXISTS idx_crm_contacts_tags ON crm_contacts USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_crm_enrollments_campaign ON crm_enrollments(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_crm_enrollments_status ON crm_enrollments(status);
+CREATE INDEX IF NOT EXISTS idx_crm_enrollments_next_step ON crm_enrollments(next_step_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_crm_sent_emails_thread ON crm_sent_emails(gmail_thread_id);
+CREATE INDEX IF NOT EXISTS idx_crm_sent_emails_tracking ON crm_sent_emails(tracking_pixel_id);
+CREATE INDEX IF NOT EXISTS idx_crm_sent_emails_contact ON crm_sent_emails(contact_id);
 
--- Row Level Security
-ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
-ALTER TABLE enrollments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE sent_emails ENABLE ROW LEVEL SECURITY;
-
--- RLS Policies (using service role key bypasses these; they apply to anon/authenticated keys)
--- For this app we use service key on backend, so RLS is enforced in application logic.
--- These policies serve as a safety net.
-
-CREATE POLICY contacts_access ON contacts FOR ALL USING (
-  owner_id = auth.uid()
-  OR EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role IN ('manager', 'admin'))
-);
-
-CREATE POLICY campaigns_access ON campaigns FOR ALL USING (
-  owner_id = auth.uid()
-  OR EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role IN ('manager', 'admin'))
-);
-
-CREATE POLICY enrollments_access ON enrollments FOR ALL USING (
-  EXISTS (
-    SELECT 1 FROM contacts c
-    WHERE c.id = enrollments.contact_id
-    AND (c.owner_id = auth.uid()
-      OR EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role IN ('manager', 'admin')))
-  )
-);
-
-CREATE POLICY sent_emails_access ON sent_emails FOR ALL USING (
-  sender_id = auth.uid()
-  OR EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role IN ('manager', 'admin'))
-);
+-- RPC function for tracking pixel
+CREATE OR REPLACE FUNCTION crm_increment_open_count(pixel_id uuid)
+RETURNS void AS $$
+  UPDATE crm_sent_emails
+  SET open_count = open_count + 1,
+      opened_at = COALESCE(opened_at, NOW())
+  WHERE tracking_pixel_id = pixel_id;
+$$ LANGUAGE sql;
