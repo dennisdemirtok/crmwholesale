@@ -22,7 +22,6 @@ router.get('/google/callback', async (req: Request, res: Response) => {
   try {
     const { tokens, userInfo } = await exchangeCode(code);
 
-    // Check if user exists
     const existingUser = await queryOne<{ id: string; role: string }>(
       'SELECT id, role FROM crm_users WHERE email = $1',
       [userInfo.email]
@@ -81,14 +80,9 @@ router.get('/google/callback', async (req: Request, res: Response) => {
       { expiresIn: '7d' }
     );
 
+    // Redirect to frontend with token in URL (cross-domain safe)
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.cookie('session', sessionToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-    res.redirect(`${frontendUrl}/dashboard?auth=success`);
+    res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
   } catch (err: any) {
     console.error('OAuth callback error:', err);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -97,12 +91,11 @@ router.get('/google/callback', async (req: Request, res: Response) => {
 });
 
 router.post('/logout', (_req: Request, res: Response) => {
-  res.clearCookie('session');
   res.json({ ok: true });
 });
 
 router.get('/me', async (req: Request, res: Response) => {
-  const token = req.cookies?.session || req.headers.authorization?.replace('Bearer ', '');
+  const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) {
     res.status(401).json({ error: 'Not authenticated' });
     return;

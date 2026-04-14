@@ -1,17 +1,17 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User } from '../types';
-import { api } from '../utils/api';
+import { api, getToken, clearToken } from '../utils/api';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  logout: () => Promise<void>;
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
-  logout: async () => {},
+  logout: () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -19,6 +19,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
@@ -37,10 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const logout = async () => {
-    try {
-      await api.post('/auth/logout');
-    } catch {}
+  const logout = () => {
+    clearToken();
     setUser(null);
     window.location.href = '/login';
   };

@@ -8,6 +8,7 @@ import ContactDetail from './pages/ContactDetail';
 import Campaigns from './pages/Campaigns';
 import CampaignDetail from './pages/CampaignDetail';
 import Emails from './pages/Emails';
+import AuthCallback from './pages/AuthCallback';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -29,6 +30,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route
         path="/dashboard"
         element={
