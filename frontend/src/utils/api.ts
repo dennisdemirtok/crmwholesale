@@ -11,7 +11,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (res.status === 401) {
-    window.location.href = '/login';
+    if (!window.location.pathname.includes('/login')) {
+      window.location.href = '/login';
+    }
     throw new Error('Not authenticated');
   }
 
@@ -24,9 +26,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: any) =>
-    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  get: <T>(path: string, options?: RequestInit) => request<T>(path, options),
+  post: <T>(path: string, body?: any, options?: RequestInit) =>
+    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, ...options }),
   put: <T>(path: string, body?: any) =>
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
