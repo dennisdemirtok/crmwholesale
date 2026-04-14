@@ -1,5 +1,7 @@
 import { Mail } from 'lucide-react';
 
+const API_URL = import.meta.env.VITE_API_URL || '';
+
 export default function Login() {
   const error = new URLSearchParams(window.location.search).get('error');
 
@@ -21,7 +23,7 @@ export default function Login() {
           )}
 
           <a
-            href="/auth/google/start"
+            href={`${API_URL}/auth/google/start`}
             className="flex items-center justify-center gap-3 w-full px-4 py-3 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 transition-colors"
           >
             <Mail size={20} />
