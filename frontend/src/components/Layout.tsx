@@ -44,7 +44,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       >
         <div className="flex items-center justify-between h-16 px-6 border-b border-gray-200">
           <h1 className="text-lg font-semibold text-gray-900">
-            Flattered <span className="text-brand-600">CRM</span>
+            Dennis <span className="text-brand-600">CRM</span>
           </h1>
           <button
             className="lg:hidden text-gray-500 hover:text-gray-700"
@@ -109,7 +109,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <Menu size={24} />
           </button>
           <h1 className="ml-3 text-lg font-semibold text-gray-900">
-            Flattered <span className="text-brand-600">CRM</span>
+            Dennis <span className="text-brand-600">CRM</span>
           </h1>
         </header>
 

@@ -10,7 +10,7 @@ export default function Login() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900">
-            Flattered <span className="text-brand-600">CRM</span>
+            Dennis <span className="text-brand-600">CRM</span>
           </h1>
           <p className="mt-2 text-gray-500">Wholesale Team</p>
         </div>
