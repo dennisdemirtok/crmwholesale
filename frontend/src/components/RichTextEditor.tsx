@@ -1,5 +1,5 @@
-import { useRef, useCallback } from 'react';
-import { Bold, Italic, List, Link, Type, Undo, Redo } from 'lucide-react';
+import { useRef, useCallback, useEffect } from 'react';
+import { Bold, Italic, List, Link, Undo, Redo } from 'lucide-react';
 
 interface RichTextEditorProps {
   value: string;
@@ -10,8 +10,19 @@ interface RichTextEditorProps {
 
 export default function RichTextEditor({ value, onChange, placeholder, rows = 6 }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const initializedRef = useRef(false);
+
+  // Set initial content only once on mount
+  useEffect(() => {
+    if (editorRef.current && !initializedRef.current) {
+      editorRef.current.innerHTML = value || '';
+      initializedRef.current = true;
+    }
+  }, [value]);
 
   const exec = useCallback((command: string, val?: string) => {
+    // Re-focus editor before executing command
+    editorRef.current?.focus();
     document.execCommand(command, false, val);
     if (editorRef.current) {
       onChange(editorRef.current.innerHTML);
@@ -31,24 +42,29 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
   }, []);
 
   const insertVariable = useCallback((variable: string) => {
-    exec('insertText', `{{${variable}}}`);
-  }, [exec]);
+    editorRef.current?.focus();
+    document.execCommand('insertText', false, `{{${variable}}}`);
+    if (editorRef.current) {
+      onChange(editorRef.current.innerHTML);
+    }
+  }, [onChange]);
 
   return (
     <div className="border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-brand-500 focus-within:border-transparent">
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 py-1.5 bg-gray-50 border-b border-gray-200 flex-wrap">
-        <button type="button" onClick={() => exec('bold')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Fet">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec('bold')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Fet">
           <Bold size={15} />
         </button>
-        <button type="button" onClick={() => exec('italic')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Kursiv">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec('italic')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Kursiv">
           <Italic size={15} />
         </button>
-        <button type="button" onClick={() => exec('insertUnorderedList')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Lista">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec('insertUnorderedList')} className="p-1.5 rounded hover:bg-gray-200 text-gray-600" title="Lista">
           <List size={15} />
         </button>
         <button
           type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
             const url = prompt('Ange URL:');
             if (url) exec('createLink', url);
@@ -61,10 +77,10 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
 
         <div className="w-px h-5 bg-gray-300 mx-1" />
 
-        <button type="button" onClick={() => exec('undo')} className="p-1.5 rounded hover:bg-gray-200 text-gray-400" title="Ångra">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec('undo')} className="p-1.5 rounded hover:bg-gray-200 text-gray-400" title="Ångra">
           <Undo size={15} />
         </button>
-        <button type="button" onClick={() => exec('redo')} className="p-1.5 rounded hover:bg-gray-200 text-gray-400" title="Gör om">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec('redo')} className="p-1.5 rounded hover:bg-gray-200 text-gray-400" title="Gör om">
           <Redo size={15} />
         </button>
 
@@ -77,6 +93,7 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
             <button
               key={v}
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => insertVariable(v)}
               className="px-2 py-0.5 text-xs bg-brand-50 text-brand-700 rounded hover:bg-brand-100 font-medium"
             >
@@ -92,7 +109,6 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
         contentEditable
         onInput={handleInput}
         onPaste={handlePaste}
-        dangerouslySetInnerHTML={{ __html: value }}
         data-placeholder={placeholder || 'Skriv ditt meddelande...'}
         className="px-3 py-2 text-sm min-h-[120px] max-h-[300px] overflow-y-auto focus:outline-none empty:before:content-[attr(data-placeholder)] empty:before:text-gray-400"
         style={{ minHeight: `${(rows || 6) * 24}px` }}
