@@ -5,7 +5,7 @@ import { api } from '../utils/api';
 import { Contact } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import Modal from '../components/Modal';
-import { Plus, Search, Upload, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Search, Upload, Mail, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function Contacts() {
   const [search, setSearch] = useState('');
@@ -15,6 +15,7 @@ export default function Contacts() {
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showGmailImport, setShowGmailImport] = useState(false);
 
   const { contacts, total, totalPages, loading, refetch } = useContacts({
     search: search || undefined,
@@ -30,11 +31,18 @@ export default function Contacts() {
         <h1 className="text-2xl font-bold text-gray-900">Kontakter</h1>
         <div className="flex gap-2">
           <button
+            onClick={() => setShowGmailImport(true)}
+            className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            <Mail size={16} />
+            Hämta från Gmail
+          </button>
+          <button
             onClick={() => setShowImport(true)}
             className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
           >
             <Upload size={16} />
-            Importera
+            CSV-import
           </button>
           <button
             onClick={() => setShowAdd(true)}
@@ -196,6 +204,13 @@ export default function Contacts() {
         open={showImport}
         onClose={() => setShowImport(false)}
         onImported={() => { setShowImport(false); refetch(); }}
+      />
+
+      {/* Gmail Import Modal */}
+      <GmailImportModal
+        open={showGmailImport}
+        onClose={() => setShowGmailImport(false)}
+        onImported={() => { setShowGmailImport(false); refetch(); }}
       />
     </div>
   );
@@ -368,6 +383,109 @@ function ImportModal({
             {importing ? 'Importerar...' : 'Importera'}
           </button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+function GmailImportModal({
+  open,
+  onClose,
+  onImported,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState('');
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const data = await api.post<any>('/api/contacts/import-from-email', { email });
+      setResult(data);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Hämta kontakt från Gmail" size="lg">
+      <div className="space-y-4">
+        <p className="text-sm text-gray-500">
+          Ange en e-postadress så hämtar vi kontaktinformation och mailhistorik från din Gmail.
+        </p>
+
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="anna@boutique-stockholm.se"
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+          >
+            <Mail size={16} />
+            {loading ? 'Söker...' : 'Hämta'}
+          </button>
+        </form>
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
+
+        {result && (
+          <div className="space-y-4">
+            <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-sm font-medium text-green-800">{result.message}</p>
+              {result.contact && (
+                <div className="mt-2 text-sm text-green-700">
+                  <p><strong>{result.contact.contact_name}</strong> — {result.contact.company}</p>
+                  <p className="text-xs">{result.contact.email}</p>
+                </div>
+              )}
+            </div>
+
+            {result.emailHistory && result.emailHistory.length > 0 && (
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">
+                  Mailhistorik ({result.emailHistory.length} mail):
+                </p>
+                <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                  {result.emailHistory.map((msg: any, i: number) => (
+                    <div key={i} className="px-3 py-2 text-xs">
+                      <div className="flex justify-between">
+                        <span className="font-medium text-gray-700 truncate max-w-[300px]">{msg.subject || '(inget ämne)'}</span>
+                        <span className="text-gray-400 ml-2 whitespace-nowrap">{msg.date ? new Date(msg.date).toLocaleDateString('sv-SE') : ''}</span>
+                      </div>
+                      <p className="text-gray-500 truncate mt-0.5">{msg.snippet}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => { setEmail(''); setResult(null); setError(''); onImported(); }}
+                className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700"
+              >
+                Klar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

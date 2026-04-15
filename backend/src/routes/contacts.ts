@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
 import { pool, queryOne, queryAll } from '../db/supabase';
+import { getValidAccessToken } from '../services/gmail';
+import { google } from 'googleapis';
 
 const router = Router();
 router.use(authenticate);
@@ -106,6 +108,116 @@ router.post('/import', async (req: Request, res: Response) => {
     } catch { /* skip bad rows */ }
   }
   res.status(201).json({ imported });
+});
+
+// Import contact from Gmail email address
+router.post('/import-from-email', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  const userId = req.user!.userId;
+
+  if (!email) { res.status(400).json({ error: 'email required' }); return; }
+
+  try {
+    const accessToken = await getValidAccessToken(userId);
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: accessToken });
+    const gmail = google.gmail({ version: 'v1', auth });
+
+    // Search for emails from/to this address
+    const { data } = await gmail.users.messages.list({
+      userId: 'me',
+      q: `from:${email} OR to:${email}`,
+      maxResults: 20,
+    });
+
+    const messages = data.messages || [];
+
+    // Get details from first few messages to extract contact info
+    let contactName = '';
+    let company = '';
+    const emailHistory: Array<{
+      from: string;
+      to: string;
+      subject: string;
+      date: string;
+      snippet: string;
+      messageId: string;
+      threadId: string;
+    }> = [];
+
+    for (const msg of messages.slice(0, 15)) {
+      const { data: message } = await gmail.users.messages.get({
+        userId: 'me',
+        id: msg.id!,
+        format: 'metadata',
+        metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+      });
+
+      const headers = message.payload?.headers || [];
+      const getH = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+
+      const from = getH('From');
+      const to = getH('To');
+      const subject = getH('Subject');
+      const date = getH('Date');
+
+      // Try to extract name from the "From" header: "Name <email>"
+      if (from.toLowerCase().includes(email.toLowerCase()) && !contactName) {
+        const match = from.match(/^"?([^"<]+)"?\s*</);
+        if (match) contactName = match[1].trim();
+      }
+
+      // Try to extract company from email domain
+      if (!company) {
+        const domain = email.split('@')[1];
+        if (domain && !['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'icloud.com'].includes(domain)) {
+          company = domain.split('.')[0].charAt(0).toUpperCase() + domain.split('.')[0].slice(1);
+        }
+      }
+
+      emailHistory.push({
+        from,
+        to,
+        subject,
+        date,
+        snippet: message.snippet || '',
+        messageId: message.id!,
+        threadId: message.threadId!,
+      });
+    }
+
+    // Create contact
+    const contact = await queryOne(
+      `INSERT INTO crm_contacts (company, contact_name, email, status, owner_id, notes)
+       VALUES ($1, $2, $3, 'prospect', $4, $5)
+       ON CONFLICT DO NOTHING
+       RETURNING *`,
+      [
+        company || 'Okänt företag',
+        contactName || email.split('@')[0],
+        email,
+        userId,
+        `Importerad från Gmail. ${messages.length} mail hittade.`,
+      ]
+    );
+
+    if (!contact) {
+      // Contact might already exist
+      const existing = await queryOne('SELECT * FROM crm_contacts WHERE email = $1 AND owner_id = $2', [email, userId]);
+      if (existing) {
+        res.json({ contact: existing, emailHistory, message: 'Kontakten finns redan' });
+        return;
+      }
+    }
+
+    res.json({
+      contact: contact,
+      emailHistory,
+      message: `Kontakt skapad med ${emailHistory.length} mail hittade`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

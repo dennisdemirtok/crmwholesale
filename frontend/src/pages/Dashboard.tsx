@@ -111,20 +111,25 @@ export default function Dashboard() {
             <p className="text-sm text-gray-500">Inga svar att hantera just nu</p>
           ) : (
             <ul className="space-y-2">
-              {data.needsAttention.map((e) => (
-                <li
-                  key={e.id}
-                  className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">
-                      {e.contacts?.contact_name}
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      {e.contacts?.company} — {e.campaigns?.name}
-                    </p>
-                  </div>
-                  <StatusBadge status="replied" />
+              {data.needsAttention.map((e: any) => (
+                <li key={e.id}>
+                  <Link
+                    to={`/contacts/${e.contact_id}`}
+                    className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        {e.contacts?.contact_name}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {e.contacts?.company} — {e.campaigns?.name}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status="replied" />
+                      <ArrowRight size={14} className="text-gray-400" />
+                    </div>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -152,10 +157,14 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {data.recentActivity.map((email) => (
-                  <tr key={email.id} className="hover:bg-gray-50">
+                {data.recentActivity.map((email: any) => (
+                  <tr
+                    key={email.id}
+                    className="hover:bg-gray-50 cursor-pointer"
+                    onClick={() => window.location.href = `/contacts/${email.contact_id}`}
+                  >
                     <td className="py-2.5">
-                      <p className="font-medium text-gray-900">
+                      <p className="font-medium text-brand-700 hover:text-brand-800">
                         {email.contacts?.contact_name}
                       </p>
                       <p className="text-xs text-gray-500">{email.contacts?.company}</p>

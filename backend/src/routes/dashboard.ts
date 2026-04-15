@@ -37,7 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
 
   // Replied enrollments needing attention
   const repliedEnrollments = await queryAll(
-    `SELECT e.id, e.status, e.enrolled_at,
+    `SELECT e.id, e.contact_id, e.status, e.enrolled_at,
        json_build_object('company', c.company, 'contact_name', c.contact_name, 'email', c.email) as contacts,
        json_build_object('name', ca.name) as campaigns
      FROM crm_enrollments e
@@ -49,7 +49,7 @@ router.get('/', async (req: Request, res: Response) => {
 
   // Recent activity
   const recentActivity = await queryAll(
-    `SELECT se.id, se.subject, se.sent_at, se.opened_at, se.replied_at,
+    `SELECT se.id, se.contact_id, se.gmail_thread_id, se.subject, se.sent_at, se.opened_at, se.replied_at,
        json_build_object('company', c.company, 'contact_name', c.contact_name, 'email', c.email) as contacts
      FROM crm_sent_emails se
      JOIN crm_contacts c ON se.contact_id = c.id
