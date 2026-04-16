@@ -31,9 +31,18 @@ export default function ContactDetail() {
       api.get<Contact>(`/api/contacts/${id}`),
       api.get<SentEmail[]>(`/api/emails/contact/${id}`),
     ])
-      .then(([c, e]) => {
+      .then(async ([c, e]) => {
         setContact(c);
         setEmails(e);
+        // Auto-check for replies from Gmail
+        try {
+          const result = await api.post<{ newReplies: number }>(`/api/emails/check-replies/${id}`);
+          if (result.newReplies > 0) {
+            // Reload emails to get updated replied_at
+            const updated = await api.get<SentEmail[]>(`/api/emails/contact/${id}`);
+            setEmails(updated);
+          }
+        } catch { /* ignore */ }
       })
       .catch(console.error)
       .finally(() => setLoading(false));

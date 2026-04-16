@@ -176,9 +176,10 @@ export async function checkForReplies(
   const gmail = getGmailClient(accessToken);
 
   const afterSeconds = Math.floor(afterTimestamp / 1000);
+  // Don't require unread — the user may have already read the reply in Gmail
   const { data } = await gmail.users.messages.list({
     userId: 'me',
-    q: `in:inbox is:unread after:${afterSeconds}`,
+    q: `in:inbox after:${afterSeconds}`,
     maxResults: 50,
   });
 
@@ -204,6 +205,57 @@ export async function checkForReplies(
   }
 
   return replies;
+}
+
+/**
+ * Check specific thread IDs for replies (more targeted than polling all inbox)
+ */
+export async function checkThreadsForReplies(
+  userId: string,
+  threadIds: string[]
+): Promise<Array<{ threadId: string; hasReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string }>> {
+  const accessToken = await getValidAccessToken(userId);
+  const gmail = getGmailClient(accessToken);
+
+  const user = await queryOne<{ email: string }>('SELECT email FROM crm_users WHERE id = $1', [userId]);
+  if (!user) return [];
+
+  const results: Array<{ threadId: string; hasReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string }> = [];
+
+  for (const threadId of threadIds) {
+    try {
+      const { data: thread } = await gmail.users.threads.get({
+        userId: 'me',
+        id: threadId,
+        format: 'metadata',
+        metadataHeaders: ['From', 'Date'],
+      });
+
+      const messages = thread.messages || [];
+      // Check if any message in thread is NOT from us (= a reply from someone else)
+      const replies = messages.filter(msg => {
+        const from = msg.payload?.headers?.find(h => h.name === 'From')?.value || '';
+        return !from.toLowerCase().includes(user.email.toLowerCase());
+      });
+
+      if (replies.length > 0) {
+        const latest = replies[replies.length - 1];
+        const latestFrom = latest.payload?.headers?.find(h => h.name === 'From')?.value || '';
+        const latestDate = latest.payload?.headers?.find(h => h.name === 'Date')?.value || '';
+        results.push({
+          threadId,
+          hasReply: true,
+          latestFrom,
+          latestSnippet: latest.snippet || '',
+          latestDate,
+        });
+      }
+    } catch {
+      // Thread might not exist or be inaccessible
+    }
+  }
+
+  return results;
 }
 
 export async function getThread(userId: string, threadId: string) {

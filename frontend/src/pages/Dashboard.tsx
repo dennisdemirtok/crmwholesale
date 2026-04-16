@@ -11,11 +11,14 @@ import {
   Megaphone,
   ArrowRight,
   Clock,
+  RefreshCw,
 } from 'lucide-react';
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState('');
 
   useEffect(() => {
     api
@@ -37,7 +40,34 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <div className="flex items-center gap-2">
+          {syncResult && <span className="text-sm text-green-600">{syncResult}</span>}
+          <button
+            onClick={async () => {
+              setSyncing(true);
+              setSyncResult('');
+              try {
+                const res = await api.post<{ checked: number; newReplies: number }>('/api/emails/sync-replies');
+                setSyncResult(`${res.newReplies} nya svar hittade`);
+                if (res.newReplies > 0) {
+                  // Reload dashboard
+                  const newData = await api.get<DashboardData>('/api/dashboard');
+                  setData(newData);
+                }
+                setTimeout(() => setSyncResult(''), 5000);
+              } catch { setSyncResult('Kunde inte synka'); }
+              finally { setSyncing(false); }
+            }}
+            disabled={syncing}
+            className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} />
+            {syncing ? 'Synkar...' : 'Synka svar'}
+          </button>
+        </div>
+      </div>
 
       {/* Stats cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

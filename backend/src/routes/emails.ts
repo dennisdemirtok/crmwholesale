@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
 import { pool, queryOne, queryAll } from '../db/supabase';
-import { sendEmail, getThread, getMessage } from '../services/gmail';
+import { sendEmail, getThread, getMessage, checkThreadsForReplies } from '../services/gmail';
 import { injectTrackingPixel } from '../utils/template';
 import { v4 as uuid } from 'uuid';
 
@@ -76,6 +76,100 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
 
     res.json({ threadId: thread.id, messages });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// Check for replies on a contact's sent emails (call from frontend when viewing contact)
+router.post('/check-replies/:contactId', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const contactId = req.params.contactId;
+
+  try {
+    // Get all sent emails with thread IDs that haven't been marked as replied
+    const unreplied = await queryAll(
+      `SELECT id, gmail_thread_id FROM crm_sent_emails
+       WHERE contact_id = $1 AND sender_id = $2 AND gmail_thread_id IS NOT NULL AND replied_at IS NULL`,
+      [contactId, userId]
+    );
+
+    if (unreplied.length === 0) {
+      res.json({ checked: 0, newReplies: 0 });
+      return;
+    }
+
+    const threadIds = unreplied.map(e => e.gmail_thread_id);
+    const replies = await checkThreadsForReplies(userId, threadIds);
+
+    let newReplies = 0;
+    for (const reply of replies) {
+      if (reply.hasReply) {
+        // Find matching sent email and mark as replied
+        const email = unreplied.find(e => e.gmail_thread_id === reply.threadId);
+        if (email) {
+          await pool.query(
+            'UPDATE crm_sent_emails SET replied_at = NOW() WHERE id = $1 AND replied_at IS NULL',
+            [email.id]
+          );
+
+          // Also update enrollment if linked
+          await pool.query(
+            `UPDATE crm_enrollments SET status = 'replied', next_step_at = NULL
+             WHERE id = (SELECT enrollment_id FROM crm_sent_emails WHERE id = $1) AND status = 'active'`,
+            [email.id]
+          );
+          newReplies++;
+        }
+      }
+    }
+
+    res.json({ checked: unreplied.length, newReplies });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual sync: check all recent emails for replies
+router.post('/sync-replies', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+
+  try {
+    const unreplied = await queryAll(
+      `SELECT id, gmail_thread_id FROM crm_sent_emails
+       WHERE sender_id = $1 AND gmail_thread_id IS NOT NULL AND replied_at IS NULL
+       AND sent_at > NOW() - INTERVAL '30 days'`,
+      [userId]
+    );
+
+    if (unreplied.length === 0) {
+      res.json({ checked: 0, newReplies: 0 });
+      return;
+    }
+
+    const threadIds = unreplied.map(e => e.gmail_thread_id);
+    const replies = await checkThreadsForReplies(userId, threadIds);
+
+    let newReplies = 0;
+    for (const reply of replies) {
+      if (reply.hasReply) {
+        const email = unreplied.find(e => e.gmail_thread_id === reply.threadId);
+        if (email) {
+          await pool.query(
+            'UPDATE crm_sent_emails SET replied_at = NOW() WHERE id = $1 AND replied_at IS NULL',
+            [email.id]
+          );
+          await pool.query(
+            `UPDATE crm_enrollments SET status = 'replied', next_step_at = NULL
+             WHERE id = (SELECT enrollment_id FROM crm_sent_emails WHERE id = $1) AND status = 'active'`,
+            [email.id]
+          );
+          newReplies++;
+        }
+      }
+    }
+
+    res.json({ checked: unreplied.length, newReplies });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get('/stats', async (req: Request, res: Response) => {
