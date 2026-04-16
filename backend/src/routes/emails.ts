@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth';
 import { pool, queryOne, queryAll } from '../db/supabase';
-import { sendEmail, getThread, getMessage, checkThreadsForReplies } from '../services/gmail';
+import { sendEmail, getThread, getMessage, checkThreadsForReplies, Attachment } from '../services/gmail';
 import { injectTrackingPixel } from '../utils/template';
 import { v4 as uuid } from 'uuid';
 
@@ -9,7 +9,7 @@ const router = Router();
 router.use(authenticate);
 
 router.post('/send', async (req: Request, res: Response) => {
-  const { contact_id, subject, body, thread_id, reply_to_message_id } = req.body;
+  const { contact_id, subject, body, thread_id, reply_to_message_id, attachments } = req.body;
   const userId = req.user!.userId;
   if (!contact_id || !subject || !body) { res.status(400).json({ error: 'contact_id, subject, and body required' }); return; }
 
@@ -19,8 +19,19 @@ router.post('/send', async (req: Request, res: Response) => {
   const trackingPixelId = uuid();
   const htmlBody = injectTrackingPixel(body, trackingPixelId);
 
+  // Parse attachments if provided
+  const parsedAttachments: Attachment[] = (attachments || []).map((a: any) => ({
+    filename: a.filename,
+    mimeType: a.mimeType,
+    content: a.content, // already base64
+  }));
+
   try {
-    const result = await sendEmail(userId, contact.email, subject, htmlBody, reply_to_message_id, thread_id);
+    const result = await sendEmail(
+      userId, contact.email, subject, htmlBody,
+      reply_to_message_id, thread_id,
+      parsedAttachments.length > 0 ? parsedAttachments : undefined
+    );
     const sentEmail = await queryOne(
       `INSERT INTO crm_sent_emails (contact_id, sender_id, gmail_message_id, gmail_thread_id, subject, body, tracking_pixel_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,

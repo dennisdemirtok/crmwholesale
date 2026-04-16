@@ -15,6 +15,7 @@ import {
   Clock,
 } from 'lucide-react';
 import RichTextEditor from '../components/RichTextEditor';
+import FileAttachment, { AttachmentFile } from '../components/FileAttachment';
 
 export default function ContactDetail() {
   const { id } = useParams<{ id: string }>();
@@ -474,6 +475,7 @@ function SendEmailModal({
 }) {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [sending, setSending] = useState(false);
 
   const handleSend = async (e: React.FormEvent) => {
@@ -484,9 +486,15 @@ function SendEmailModal({
         contact_id: contact.id,
         subject,
         body,
+        attachments: attachments.map(a => ({
+          filename: a.filename,
+          mimeType: a.mimeType,
+          content: a.content,
+        })),
       });
       setSubject('');
       setBody('');
+      setAttachments([]);
       onSent(email);
     } catch (err: any) {
       alert(err.message);
@@ -519,6 +527,9 @@ function SendEmailModal({
             placeholder="Skriv ditt meddelande..."
             rows={8}
           />
+        </div>
+        <div>
+          <FileAttachment attachments={attachments} onChange={setAttachments} />
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Avbryt</button>

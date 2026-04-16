@@ -104,13 +104,20 @@ function encodeHeader(value: string): string {
   return `=?UTF-8?B?${encoded}?=`;
 }
 
+export interface Attachment {
+  filename: string;
+  mimeType: string;
+  content: string; // base64 encoded
+}
+
 export async function sendEmail(
   userId: string,
   to: string,
   subject: string,
   htmlBody: string,
   replyToMessageId?: string,
-  threadId?: string
+  threadId?: string,
+  attachments?: Attachment[]
 ): Promise<{ messageId: string; threadId: string }> {
   const accessToken = await getValidAccessToken(userId);
   const gmail = getGmailClient(accessToken);
@@ -128,16 +135,14 @@ export async function sendEmail(
     fullBody += `<br/><br/>--<br/>${user.signature}`;
   }
 
-  // Build MIME message with proper UTF-8 encoding
   const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const hasAttachments = attachments && attachments.length > 0;
 
   const headers = [
     `From: =?UTF-8?B?${Buffer.from(user.name, 'utf-8').toString('base64')}?= <${user.email}>`,
     `To: ${to}`,
     `Subject: ${encodeHeader(subject)}`,
     'MIME-Version: 1.0',
-    `Content-Type: text/html; charset="UTF-8"`,
-    'Content-Transfer-Encoding: base64',
   ];
 
   if (replyToMessageId) {
@@ -145,8 +150,41 @@ export async function sendEmail(
     headers.push(`References: ${replyToMessageId}`);
   }
 
-  const bodyBase64 = Buffer.from(fullBody, 'utf-8').toString('base64');
-  const message = headers.join('\r\n') + '\r\n\r\n' + bodyBase64;
+  let message: string;
+
+  if (hasAttachments) {
+    headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    const parts: string[] = [];
+
+    // HTML body part
+    parts.push([
+      `--${boundary}`,
+      'Content-Type: text/html; charset="UTF-8"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(fullBody, 'utf-8').toString('base64'),
+    ].join('\r\n'));
+
+    // Attachment parts
+    for (const att of attachments!) {
+      parts.push([
+        `--${boundary}`,
+        `Content-Type: ${att.mimeType}; name="${att.filename}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${att.filename}"`,
+        '',
+        att.content,
+      ].join('\r\n'));
+    }
+
+    parts.push(`--${boundary}--`);
+    message = headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n');
+  } else {
+    headers.push('Content-Type: text/html; charset="UTF-8"');
+    headers.push('Content-Transfer-Encoding: base64');
+    const bodyBase64 = Buffer.from(fullBody, 'utf-8').toString('base64');
+    message = headers.join('\r\n') + '\r\n\r\n' + bodyBase64;
+  }
 
   const raw = Buffer.from(message, 'utf-8')
     .toString('base64')

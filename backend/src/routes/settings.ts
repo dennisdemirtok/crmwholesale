@@ -25,4 +25,17 @@ router.put('/signature', async (req: Request, res: Response) => {
   res.json(user);
 });
 
+// Upload image — returns a data URI that can be embedded in signature HTML
+router.post('/upload-image', async (req: Request, res: Response) => {
+  const { image, filename } = req.body;
+  // image should be base64 encoded with data URI prefix, e.g. "data:image/png;base64,..."
+  if (!image) {
+    res.status(400).json({ error: 'image required (base64 data URI)' });
+    return;
+  }
+  // Just echo it back — the frontend will embed it directly in the signature HTML
+  // In production you'd upload to a CDN, but for email signatures data URIs work fine
+  res.json({ url: image, filename });
+});
+
 export default router;

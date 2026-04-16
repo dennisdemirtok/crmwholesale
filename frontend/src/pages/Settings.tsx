@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { api } from '../utils/api';
 import RichTextEditor from '../components/RichTextEditor';
-import { Settings as SettingsIcon, Save, Check } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Check, ImagePlus } from 'lucide-react';
 
 export default function Settings() {
   const [signature, setSignature] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api.get<any>('/api/settings')
@@ -28,6 +29,25 @@ export default function Settings() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Bilden är för stor (max 2 MB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUri = reader.result as string;
+      // Insert image into signature via execCommand on the active editor
+      // We'll append it to the signature HTML
+      const img = `<img src="${dataUri}" alt="Logo" style="max-width: 200px; max-height: 80px;" />`;
+      setSignature((prev) => prev + '<br/>' + img);
+    };
+    reader.readAsDataURL(file);
+    if (imageInputRef.current) imageInputRef.current.value = '';
   };
 
   if (loading) {
@@ -58,6 +78,14 @@ export default function Settings() {
           rows={5}
         />
 
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          onChange={handleImageUpload}
+          className="hidden"
+        />
+
         <div className="flex items-center gap-3 mt-4">
           <button
             onClick={handleSave}
@@ -66,6 +94,13 @@ export default function Settings() {
           >
             {saved ? <Check size={16} /> : <Save size={16} />}
             {saving ? 'Sparar...' : saved ? 'Sparat!' : 'Spara signatur'}
+          </button>
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+          >
+            <ImagePlus size={16} />
+            Lägg till logga/bild
           </button>
           {saved && <span className="text-sm text-green-600">Signaturen är sparad</span>}
         </div>
