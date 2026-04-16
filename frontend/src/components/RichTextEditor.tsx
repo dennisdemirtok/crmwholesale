@@ -37,9 +37,19 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     e.preventDefault();
-    const text = e.clipboardData.getData('text/plain');
-    document.execCommand('insertText', false, text);
-  }, []);
+    // Try HTML first (preserves images, links, formatting)
+    const html = e.clipboardData.getData('text/html');
+    if (html) {
+      document.execCommand('insertHTML', false, html);
+    } else {
+      // Fallback to plain text
+      const text = e.clipboardData.getData('text/plain');
+      document.execCommand('insertText', false, text);
+    }
+    if (editorRef.current) {
+      onChange(editorRef.current.innerHTML);
+    }
+  }, [onChange]);
 
   const insertVariable = useCallback((variable: string) => {
     editorRef.current?.focus();
