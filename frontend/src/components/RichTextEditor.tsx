@@ -46,7 +46,8 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
     reader.onload = () => {
       const dataUri = reader.result as string;
       editorRef.current?.focus();
-      const imgHtml = `<img src="${dataUri}" alt="${file.name}" style="max-width: 100%; height: auto;" />`;
+      // Max 600px wide — fits well in email clients (typical mail width ~ 600-650px)
+      const imgHtml = `<img src="${dataUri}" alt="${file.name}" style="max-width: 600px; width: 100%; height: auto; display: block;" />`;
       document.execCommand('insertHTML', false, imgHtml);
       if (editorRef.current) {
         onChange(editorRef.current.innerHTML);
@@ -54,6 +55,41 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
     };
     reader.readAsDataURL(file);
   }, [onChange]);
+
+  // Sanitize pasted HTML: constrain images to sensible sizes, remove scripts
+  const sanitizePastedHtml = (html: string): string => {
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+
+    // Remove scripts and styles
+    temp.querySelectorAll('script, style, meta, link').forEach((el) => el.remove());
+
+    // Constrain all images
+    temp.querySelectorAll('img').forEach((img) => {
+      img.removeAttribute('width');
+      img.removeAttribute('height');
+      // Strip existing inline width/height from style
+      const existingStyle = img.getAttribute('style') || '';
+      const cleanStyle = existingStyle
+        .split(';')
+        .filter((s) => {
+          const prop = s.split(':')[0]?.trim().toLowerCase();
+          return prop && !['width', 'height', 'max-width', 'max-height', 'min-width', 'min-height'].includes(prop);
+        })
+        .join(';');
+      img.setAttribute('style', `${cleanStyle}${cleanStyle ? ';' : ''}max-width: 600px; width: 100%; height: auto; display: block;`);
+    });
+
+    // Constrain tables that often wrap email content
+    temp.querySelectorAll('table').forEach((table) => {
+      table.removeAttribute('width');
+      const existingStyle = table.getAttribute('style') || '';
+      const cleanStyle = existingStyle.replace(/width\s*:[^;]+;?/gi, '').replace(/max-width\s*:[^;]+;?/gi, '');
+      table.setAttribute('style', `${cleanStyle}max-width: 600px; width: 100%;`);
+    });
+
+    return temp.innerHTML;
+  };
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     // Check for image in clipboard
@@ -71,7 +107,8 @@ export default function RichTextEditor({ value, onChange, placeholder, rows = 6 
     e.preventDefault();
     const html = e.clipboardData.getData('text/html');
     if (html) {
-      document.execCommand('insertHTML', false, html);
+      const sanitized = sanitizePastedHtml(html);
+      document.execCommand('insertHTML', false, sanitized);
     } else {
       const text = e.clipboardData.getData('text/plain');
       document.execCommand('insertText', false, text);
