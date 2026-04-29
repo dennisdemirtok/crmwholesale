@@ -111,28 +111,36 @@ router.post('/check-replies/:contactId', async (req: Request, res: Response) => 
     const replies = await checkThreadsForReplies(userId, threadIds);
 
     let newReplies = 0;
+    let autoReplies = 0;
     for (const reply of replies) {
       if (reply.hasReply) {
-        // Find matching sent email and mark as replied
         const email = unreplied.find(e => e.gmail_thread_id === reply.threadId);
         if (email) {
-          await pool.query(
-            'UPDATE crm_sent_emails SET replied_at = NOW() WHERE id = $1 AND replied_at IS NULL',
-            [email.id]
-          );
-
-          // Also update enrollment if linked
-          await pool.query(
-            `UPDATE crm_enrollments SET status = 'replied', next_step_at = NULL
-             WHERE id = (SELECT enrollment_id FROM crm_sent_emails WHERE id = $1) AND status = 'active'`,
-            [email.id]
-          );
-          newReplies++;
+          if (reply.isAutoReply) {
+            // Auto-reply (OOO etc.) — mark but DON'T stop the sequence
+            await pool.query(
+              'UPDATE crm_sent_emails SET is_auto_reply = true WHERE id = $1',
+              [email.id]
+            );
+            autoReplies++;
+          } else {
+            // Real reply — mark as replied AND stop sequence
+            await pool.query(
+              'UPDATE crm_sent_emails SET replied_at = NOW() WHERE id = $1 AND replied_at IS NULL',
+              [email.id]
+            );
+            await pool.query(
+              `UPDATE crm_enrollments SET status = 'replied', next_step_at = NULL
+               WHERE id = (SELECT enrollment_id FROM crm_sent_emails WHERE id = $1) AND status = 'active'`,
+              [email.id]
+            );
+            newReplies++;
+          }
         }
       }
     }
 
-    res.json({ checked: unreplied.length, newReplies });
+    res.json({ checked: unreplied.length, newReplies, autoReplies });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

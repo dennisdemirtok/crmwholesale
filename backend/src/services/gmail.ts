@@ -246,19 +246,57 @@ export async function checkForReplies(
 }
 
 /**
+ * Detect if a message is an out-of-office / automatic reply
+ * Returns true if it looks like an auto-reply (don't stop sequence)
+ */
+function isAutoReply(subject: string, snippet: string, headers: any[]): boolean {
+  // Check Auto-Submitted header (RFC 3834)
+  const autoSubmitted = headers.find((h: any) => h.name?.toLowerCase() === 'auto-submitted')?.value;
+  if (autoSubmitted && autoSubmitted.toLowerCase() !== 'no') return true;
+
+  // Check X-Auto-Response-Suppress, X-Autoreply, etc.
+  const autoreplyHeaders = ['x-autoreply', 'x-autorespond', 'x-auto-response-suppress', 'precedence'];
+  for (const h of headers) {
+    const name = h.name?.toLowerCase();
+    if (autoreplyHeaders.includes(name)) {
+      const val = (h.value || '').toLowerCase();
+      if (name === 'precedence' && (val === 'auto_reply' || val === 'bulk' || val === 'list')) return true;
+      if (name !== 'precedence') return true;
+    }
+  }
+
+  const text = `${subject} ${snippet}`.toLowerCase();
+  const ooPatterns = [
+    'out of office', 'out-of-office', 'ooo',
+    'automatic reply', 'auto-reply', 'auto reply', 'autoreply',
+    'automatiskt svar', 'autosvar',
+    'frånvaro', 'är inte på kontoret', 'är ute', 'är borta',
+    'är på semester', 'på semester', 'tillbaka den',
+    'i am away', 'i am out of', 'i will be away', 'currently away',
+    'on vacation', 'on holiday', 'on leave', 'on parental leave',
+    'kommer tillbaka', 'will return', 'will be back',
+    'outside the office', 'unavailable',
+    'no longer with', 'has left', 'no longer works',
+    'thank you for your email', 'thank you for your message', // common in OOO
+  ];
+
+  return ooPatterns.some((p) => text.includes(p));
+}
+
+/**
  * Check specific thread IDs for replies (more targeted than polling all inbox)
  */
 export async function checkThreadsForReplies(
   userId: string,
   threadIds: string[]
-): Promise<Array<{ threadId: string; hasReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string }>> {
+): Promise<Array<{ threadId: string; hasReply: boolean; isAutoReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string; latestSubject: string }>> {
   const accessToken = await getValidAccessToken(userId);
   const gmail = getGmailClient(accessToken);
 
   const user = await queryOne<{ email: string }>('SELECT email FROM crm_users WHERE id = $1', [userId]);
   if (!user) return [];
 
-  const results: Array<{ threadId: string; hasReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string }> = [];
+  const results: Array<{ threadId: string; hasReply: boolean; isAutoReply: boolean; latestFrom: string; latestSnippet: string; latestDate: string; latestSubject: string }> = [];
 
   for (const threadId of threadIds) {
     try {
@@ -266,7 +304,7 @@ export async function checkThreadsForReplies(
         userId: 'me',
         id: threadId,
         format: 'metadata',
-        metadataHeaders: ['From', 'Date'],
+        metadataHeaders: ['From', 'Date', 'Subject', 'Auto-Submitted', 'X-Autoreply', 'X-Autorespond', 'Precedence'],
       });
 
       const messages = thread.messages || [];
@@ -278,14 +316,21 @@ export async function checkThreadsForReplies(
 
       if (replies.length > 0) {
         const latest = replies[replies.length - 1];
-        const latestFrom = latest.payload?.headers?.find(h => h.name === 'From')?.value || '';
-        const latestDate = latest.payload?.headers?.find(h => h.name === 'Date')?.value || '';
+        const headers = latest.payload?.headers || [];
+        const latestFrom = headers.find(h => h.name === 'From')?.value || '';
+        const latestDate = headers.find(h => h.name === 'Date')?.value || '';
+        const latestSubject = headers.find(h => h.name === 'Subject')?.value || '';
+        const latestSnippet = latest.snippet || '';
+        const autoReply = isAutoReply(latestSubject, latestSnippet, headers);
+
         results.push({
           threadId,
           hasReply: true,
+          isAutoReply: autoReply,
           latestFrom,
-          latestSnippet: latest.snippet || '',
+          latestSnippet,
           latestDate,
+          latestSubject,
         });
       }
     } catch {

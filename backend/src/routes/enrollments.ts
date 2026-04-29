@@ -54,6 +54,123 @@ router.post('/', async (req: Request, res: Response) => {
   res.status(201).json({ enrolled });
 });
 
+// Preview contacts matching filters (for filter-based enrollment)
+router.post('/preview', async (req: Request, res: Response) => {
+  const { country, category, status, tags } = req.body;
+  const userId = req.user!.userId;
+  const isSeller = req.user!.role === 'seller';
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (isSeller) {
+    conditions.push(`owner_id = $${idx++}`);
+    params.push(userId);
+  }
+  if (country) { conditions.push(`country = $${idx++}`); params.push(country); }
+  if (category) { conditions.push(`category = $${idx++}`); params.push(category); }
+  if (status) { conditions.push(`status = $${idx++}`); params.push(status); }
+  if (tags && Array.isArray(tags) && tags.length > 0) {
+    conditions.push(`tags && $${idx++}`); // array overlap
+    params.push(tags);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const contacts = await queryAll(
+    `SELECT id, company, contact_name, email, country, category, status, tags
+     FROM crm_contacts ${where}
+     ORDER BY company LIMIT 500`,
+    params
+  );
+
+  res.json({ contacts, total: contacts.length });
+});
+
+// Enroll contacts matching filters
+router.post('/by-filter', async (req: Request, res: Response) => {
+  const { campaign_id, country, category, status, tags } = req.body;
+  const userId = req.user!.userId;
+  const isSeller = req.user!.role === 'seller';
+
+  if (!campaign_id) { res.status(400).json({ error: 'campaign_id required' }); return; }
+
+  const campaign = await queryOne('SELECT id, status FROM crm_campaigns WHERE id = $1', [campaign_id]);
+  if (!campaign) { res.status(404).json({ error: 'Campaign not found' }); return; }
+
+  const steps = await queryAll('SELECT * FROM crm_sequence_steps WHERE campaign_id = $1 ORDER BY step_order', [campaign_id]);
+  if (steps.length === 0) { res.status(400).json({ error: 'Campaign has no sequence steps' }); return; }
+
+  // Build WHERE clause for contact filter
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+  if (isSeller) { conditions.push(`owner_id = $${idx++}`); params.push(userId); }
+  if (country) { conditions.push(`country = $${idx++}`); params.push(country); }
+  if (category) { conditions.push(`category = $${idx++}`); params.push(category); }
+  if (status) { conditions.push(`status = $${idx++}`); params.push(status); }
+  if (tags && Array.isArray(tags) && tags.length > 0) {
+    conditions.push(`tags && $${idx++}`);
+    params.push(tags);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const contacts = await queryAll(`SELECT id FROM crm_contacts ${where}`, params);
+
+  if (contacts.length === 0) {
+    res.json({ enrolled: 0 });
+    return;
+  }
+
+  const firstStepDelay = steps[0].delay_hours;
+  const nextStepAt = new Date(Date.now() + firstStepDelay * 60 * 60 * 1000);
+  let enrolled = 0;
+
+  for (const c of contacts) {
+    try {
+      const enrollment = await queryOne(
+        `INSERT INTO crm_enrollments (contact_id, campaign_id, current_step, status, next_step_at)
+         VALUES ($1, $2, 1, 'active', $3)
+         ON CONFLICT (contact_id, campaign_id) DO UPDATE SET status = 'active', current_step = 1, next_step_at = $3
+         RETURNING *`,
+        [c.id, campaign_id, nextStepAt]
+      );
+      if (enrollment) {
+        await sequenceQueue.add('process-step', {
+          enrollmentId: enrollment.id,
+          campaignId: campaign_id,
+          stepOrder: 1,
+          userId,
+        }, {
+          delay: firstStepDelay * 60 * 60 * 1000,
+          jobId: `seq-${enrollment.id}-step-1`,
+        });
+        enrolled++;
+      }
+    } catch { /* skip */ }
+  }
+
+  if (campaign.status === 'draft') {
+    await pool.query("UPDATE crm_campaigns SET status = 'active' WHERE id = $1", [campaign_id]);
+  }
+
+  res.status(201).json({ enrolled, total: contacts.length });
+});
+
+// Get all unique tags (for tag filtering UI)
+router.get('/tags', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const isSeller = req.user!.role === 'seller';
+
+  const rows = await queryAll<{ tag: string }>(
+    `SELECT DISTINCT unnest(tags) AS tag FROM crm_contacts
+     ${isSeller ? 'WHERE owner_id = $1' : ''}
+     ORDER BY tag`,
+    isSeller ? [userId] : []
+  );
+  res.json(rows.map(r => r.tag).filter(Boolean));
+});
+
 router.post('/:id/pause', async (req: Request, res: Response) => {
   const data = await queryOne(
     "UPDATE crm_enrollments SET status = 'paused' WHERE id = $1 AND status = 'active' RETURNING *",

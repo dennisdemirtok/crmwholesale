@@ -366,18 +366,48 @@ function EnrollModal({
   campaignId: string;
   onEnrolled: () => void;
 }) {
+  const [mode, setMode] = useState<'filter' | 'manual'>('filter');
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [enrolling, setEnrolling] = useState(false);
 
+  // Filter state
+  const [country, setCountry] = useState('');
+  const [category, setCategory] = useState('');
+  const [status, setStatus] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [previewContacts, setPreviewContacts] = useState<Contact[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    if (open && mode === 'manual') {
+      api.get<{ contacts: Contact[] }>(`/api/contacts?limit=200&search=${search}`).then((res) => setContacts(res.contacts));
+    }
+  }, [open, search, mode]);
+
   useEffect(() => {
     if (open) {
-      api
-        .get<{ contacts: Contact[] }>(`/api/contacts?limit=200&search=${search}`)
-        .then((res) => setContacts(res.contacts));
+      api.get<string[]>('/api/enrollments/tags').then(setAllTags).catch(() => {});
     }
-  }, [open, search]);
+  }, [open]);
+
+  // Live preview when filters change
+  useEffect(() => {
+    if (open && mode === 'filter') {
+      setPreviewLoading(true);
+      api.post<{ contacts: Contact[] }>('/api/enrollments/preview', {
+        country: country || undefined,
+        category: category || undefined,
+        status: status || undefined,
+        tags: selectedTags.length > 0 ? selectedTags : undefined,
+      })
+        .then((res) => setPreviewContacts(res.contacts))
+        .catch(() => setPreviewContacts([]))
+        .finally(() => setPreviewLoading(false));
+    }
+  }, [open, mode, country, category, status, selectedTags]);
 
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -386,61 +416,175 @@ function EnrollModal({
     setSelected(next);
   };
 
-  const handleEnroll = async () => {
+  const toggleTag = (tag: string) => {
+    setSelectedTags(selectedTags.includes(tag) ? selectedTags.filter(t => t !== tag) : [...selectedTags, tag]);
+  };
+
+  const handleEnrollManual = async () => {
     setEnrolling(true);
     try {
-      await api.post('/api/enrollments', {
-        campaign_id: campaignId,
-        contact_ids: Array.from(selected),
-      });
+      await api.post('/api/enrollments', { campaign_id: campaignId, contact_ids: Array.from(selected) });
       onEnrolled();
-    } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setEnrolling(false);
-    }
+    } catch (err: any) { alert(err.message); }
+    finally { setEnrolling(false); }
+  };
+
+  const handleEnrollFilter = async () => {
+    setEnrolling(true);
+    try {
+      const result = await api.post<{ enrolled: number }>('/api/enrollments/by-filter', {
+        campaign_id: campaignId,
+        country: country || undefined,
+        category: category || undefined,
+        status: status || undefined,
+        tags: selectedTags.length > 0 ? selectedTags : undefined,
+      });
+      alert(`${result.enrolled} kontakter enrollade!`);
+      onEnrolled();
+    } catch (err: any) { alert(err.message); }
+    finally { setEnrolling(false); }
   };
 
   return (
     <Modal open={open} onClose={onClose} title="Enrolla kontakter i kampanj" size="lg">
       <div className="space-y-4">
-        <input
-          type="text"
-          placeholder="Sök kontakter..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-        />
-        <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-          {contacts.map((c) => (
-            <label
-              key={c.id}
-              className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={selected.has(c.id)}
-                onChange={() => toggle(c.id)}
-                className="rounded border-gray-300"
-              />
-              <div>
-                <p className="text-sm font-medium text-gray-900">{c.contact_name}</p>
-                <p className="text-xs text-gray-500">{c.company} — {c.email}</p>
-              </div>
-            </label>
-          ))}
-        </div>
-        <p className="text-sm text-gray-500">{selected.size} kontakter valda</p>
-        <div className="flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Avbryt</button>
+        {/* Mode tabs */}
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
           <button
-            onClick={handleEnroll}
-            disabled={enrolling || selected.size === 0}
-            className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+            onClick={() => setMode('filter')}
+            className={`flex-1 px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${mode === 'filter' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'}`}
           >
-            {enrolling ? 'Enrollar...' : `Enrolla ${selected.size} kontakter`}
+            Filtrera (massutskick)
+          </button>
+          <button
+            onClick={() => setMode('manual')}
+            className={`flex-1 px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${mode === 'manual' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'}`}
+          >
+            Välj manuellt
           </button>
         </div>
+
+        {mode === 'filter' ? (
+          <>
+            {/* Filter inputs */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Land</label>
+                <input
+                  type="text"
+                  value={country}
+                  onChange={(e) => setCountry(e.target.value)}
+                  placeholder="t.ex. Sverige"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Kategori</label>
+                <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                  <option value="">Alla</option>
+                  <option value="boutique">Boutique</option>
+                  <option value="department">Department Store</option>
+                  <option value="agent">Agent</option>
+                  <option value="online">Online</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Status</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                  <option value="">Alla</option>
+                  <option value="active">Aktiv</option>
+                  <option value="prospect">Prospekt</option>
+                  <option value="churned">Churned</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Taggar (klicka för att välja)</label>
+              {allTags.length === 0 ? (
+                <p className="text-xs text-gray-400">Inga taggar finns ännu. Lägg till taggar på dina kontakter.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {allTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => toggleTag(tag)}
+                      className={`px-2.5 py-1 text-xs rounded-full font-medium transition-colors ${
+                        selectedTags.includes(tag)
+                          ? 'bg-brand-600 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Live preview */}
+            <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+              <p className="text-sm font-medium text-gray-900">
+                {previewLoading ? 'Räknar...' : `${previewContacts.length} kontakter matchar`}
+              </p>
+              {previewContacts.length > 0 && (
+                <div className="mt-2 max-h-32 overflow-y-auto text-xs text-gray-600 space-y-0.5">
+                  {previewContacts.slice(0, 20).map((c) => (
+                    <div key={c.id}>{c.company} — {c.contact_name}</div>
+                  ))}
+                  {previewContacts.length > 20 && (
+                    <div className="text-gray-400 italic">+ {previewContacts.length - 20} fler...</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Avbryt</button>
+              <button
+                onClick={handleEnrollFilter}
+                disabled={enrolling || previewContacts.length === 0}
+                className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+              >
+                {enrolling ? 'Enrollar...' : `Enrolla ${previewContacts.length} kontakter`}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              placeholder="Sök kontakter..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+            <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+              {contacts.map((c) => (
+                <label key={c.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer">
+                  <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} className="rounded border-gray-300" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{c.contact_name}</p>
+                    <p className="text-xs text-gray-500">{c.company} — {c.email}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <p className="text-sm text-gray-500">{selected.size} kontakter valda</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Avbryt</button>
+              <button
+                onClick={handleEnrollManual}
+                disabled={enrolling || selected.size === 0}
+                className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+              >
+                {enrolling ? 'Enrollar...' : `Enrolla ${selected.size} kontakter`}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );

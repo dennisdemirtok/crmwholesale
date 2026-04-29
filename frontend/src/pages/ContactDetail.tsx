@@ -278,7 +278,12 @@ function EmailThreadItem({
               <MessageSquare size={12} /> Svarat
             </span>
           )}
-          {!email.opened_at && !email.replied_at && (
+          {(email as any).is_auto_reply && !email.replied_at && (
+            <span className="flex items-center gap-1 text-orange-600" title="Auto-svar (frånvaro/OOO) — flödet fortsätter">
+              <MessageSquare size={12} /> Auto-svar
+            </span>
+          )}
+          {!email.opened_at && !email.replied_at && !(email as any).is_auto_reply && (
             <span className="text-gray-400">Skickat</span>
           )}
           {email.gmail_thread_id && (

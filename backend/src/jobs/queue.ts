@@ -129,23 +129,36 @@ export function startReplyCheckWorker() {
     'reply-checks',
     async (job: Job) => {
       const { userId } = job.data;
-      const { checkForReplies } = await import('../services/gmail');
+      const { checkThreadsForReplies } = await import('../services/gmail');
 
-      const since = Date.now() - 10 * 60 * 1000;
-      const replies = await checkForReplies(userId, since);
+      // Get unreplied emails from last 30 days
+      const unreplied = await queryAll(
+        `SELECT id, gmail_thread_id, enrollment_id FROM crm_sent_emails
+         WHERE sender_id = $1 AND gmail_thread_id IS NOT NULL AND replied_at IS NULL
+         AND sent_at > NOW() - INTERVAL '30 days'`,
+        [userId]
+      );
+
+      if (unreplied.length === 0) return;
+
+      const threadIds = unreplied.map(e => e.gmail_thread_id);
+      const replies = await checkThreadsForReplies(userId, threadIds);
 
       for (const reply of replies) {
-        const sentEmail = await queryOne(
-          'SELECT id, enrollment_id FROM crm_sent_emails WHERE gmail_thread_id = $1 AND replied_at IS NULL LIMIT 1',
-          [reply.threadId]
-        );
+        if (!reply.hasReply) continue;
+        const email = unreplied.find(e => e.gmail_thread_id === reply.threadId);
+        if (!email) continue;
 
-        if (sentEmail) {
-          await pool.query('UPDATE crm_sent_emails SET replied_at = $1 WHERE id = $2', [new Date(), sentEmail.id]);
-          if (sentEmail.enrollment_id) {
+        if (reply.isAutoReply) {
+          // OOO / auto-reply — flag but DON'T stop sequence
+          await pool.query('UPDATE crm_sent_emails SET is_auto_reply = true WHERE id = $1', [email.id]);
+        } else {
+          // Real reply — stop sequence
+          await pool.query('UPDATE crm_sent_emails SET replied_at = NOW() WHERE id = $1', [email.id]);
+          if (email.enrollment_id) {
             await pool.query(
               "UPDATE crm_enrollments SET status = 'replied', next_step_at = NULL WHERE id = $1 AND status = 'active'",
-              [sentEmail.enrollment_id]
+              [email.enrollment_id]
             );
           }
         }
